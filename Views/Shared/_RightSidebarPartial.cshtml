@@ -338,6 +338,7 @@
     document.addEventListener('DOMContentLoaded', function() {
         loadFriends();
         loadSuggestions();
+        startMiniChatSignalR();
     });
     
     async function loadFriends() {
@@ -477,37 +478,64 @@
         
         // Poll for new messages
         chatWindow.pollInterval = setInterval(function() {
-            loadMiniMessages(userId);
-        }, 3000);
     };
+
+    var miniChatLastIds = {};
+    var miniChatSignalR = null;
+
+    function startMiniChatSignalR() {
+        if (miniChatSignalR) return;
+        if (typeof signalR === 'undefined') return;
+        miniChatSignalR = new signalR.HubConnectionBuilder()
+            .withUrl('/chatHub')
+            .withAutomaticReconnect()
+            .build();
+        miniChatSignalR.on('ReceiveMessage', function(msg) {
+            var chatWindow = window.miniChats[msg.senderId];
+            if (!chatWindow) return;
+            var messagesDiv = document.getElementById('miniMessages-' + msg.senderId);
+            if (!messagesDiv) return;
+            var emptyState = messagesDiv.querySelector('.mini-chat-empty');
+            if (emptyState) emptyState.remove();
+            var el = document.createElement('div');
+            el.className = 'mini-msg other';
+            el.textContent = msg.content;
+            messagesDiv.appendChild(el);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        });
+        miniChatSignalR.start().catch(function(err) {
+            console.error('SignalR miniChat error:', err);
+        });
+    }
     
     window.closeMiniChat = function(userId) {
-        const chatWindow = window.miniChats[userId];
+        var chatWindow = window.miniChats[userId];
         if (chatWindow) {
-            if (chatWindow.pollInterval) {
-                clearInterval(chatWindow.pollInterval);
-            }
             chatWindow.remove();
             delete window.miniChats[userId];
+            delete miniChatLastIds[userId];
         }
     };
     
     window.loadMiniMessages = async function(userId) {
         try {
-            const response = await fetch('/Message/GetMessages?partnerId=' + userId);
-            const data = await response.json();
-            
-            const messagesDiv = document.getElementById('miniMessages-' + userId);
+            var response = await fetch('/Message/GetMessages?partnerId=' + userId);
+            var data = await response.json();
+            var messagesDiv = document.getElementById('miniMessages-' + userId);
             if (!messagesDiv) return;
-            
             if (data.success && data.messages && data.messages.length > 0) {
-                const wasAtBottom = messagesDiv.scrollHeight - messagesDiv.scrollTop <= messagesDiv.clientHeight + 50;
-                
-                messagesDiv.innerHTML = data.messages.map(function(msg) {
-                    return '<div class="mini-msg ' + (msg.isOwn ? 'own' : 'other') + '">' + escapeHtml(msg.content) + '</div>';
-                }).join('');
-                
-                if (wasAtBottom) {
+                var lastId = miniChatLastIds[userId] || 0;
+                var newMessages = data.messages.filter(function(m) { return m.id > lastId; });
+                if (newMessages.length > 0) {
+                    var emptyState = messagesDiv.querySelector('.mini-chat-empty');
+                    if (emptyState) emptyState.remove();
+                    newMessages.forEach(function(msg) {
+                        var el = document.createElement('div');
+                        el.className = 'mini-msg ' + (msg.isOwn ? 'own' : 'other');
+                        el.textContent = msg.content;
+                        messagesDiv.appendChild(el);
+                    });
+                    miniChatLastIds[userId] = data.messages[data.messages.length - 1].id;
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
             }
@@ -517,32 +545,25 @@
     };
     
     window.sendMiniMessage = async function(userId) {
-        const chatWindow = window.miniChats[userId];
+        var chatWindow = window.miniChats[userId];
         if (!chatWindow) return;
-        
-        const input = chatWindow.querySelector('.mini-chat-input');
-        const content = input.value.trim();
+        var input = chatWindow.querySelector('.mini-chat-input');
+        var content = input.value.trim();
         if (!content) return;
-        
         input.value = '';
-        
-        // Add message immediately with animation
-        const messagesDiv = document.getElementById('miniMessages-' + userId);
-        const emptyState = messagesDiv.querySelector('.mini-chat-empty');
+        var messagesDiv = document.getElementById('miniMessages-' + userId);
+        var emptyState = messagesDiv.querySelector('.mini-chat-empty');
         if (emptyState) emptyState.remove();
-        
-        messagesDiv.innerHTML += '<div class="mini-msg own">' + escapeHtml(content) + '</div>';
+        var el = document.createElement('div');
+        el.className = 'mini-msg own';
+        el.textContent = content;
+        messagesDiv.appendChild(el);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        
         try {
-            const formData = new FormData();
+            var formData = new FormData();
             formData.append('ReceiverId', userId);
             formData.append('Content', content);
-            
-            await fetch('/Message/SendMessage', {
-                method: 'POST',
-                body: formData
-            });
+            await fetch('/Message/SendMessage', { method: 'POST', body: formData });
         } catch (error) {
             console.error('Error sending message:', error);
         }

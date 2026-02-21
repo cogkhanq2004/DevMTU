@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using MTU.Data;
 using MTU.Models.DTOs;
+using MTU.Services;
 
 namespace MTU.Controllers
 {
@@ -12,11 +13,13 @@ namespace MTU.Controllers
     {
         private readonly MTUSocialDbContext _context;
         private readonly ILogger<MessageController> _logger;
+        private readonly IMessageService _messageService;
 
-        public MessageController(MTUSocialDbContext context, ILogger<MessageController> logger)
+        public MessageController(MTUSocialDbContext context, ILogger<MessageController> logger, IMessageService messageService)
         {
             _context = context;
             _logger = logger;
+            _messageService = messageService;
         }
 
         /// <summary>
@@ -207,76 +210,15 @@ namespace MTU.Controllers
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier);
                 if (userIdClaim == null || !int.TryParse(userIdClaim.Value, out int userId))
-                {
                     return Json(new { success = false });
-                }
 
-                string? imageUrl = null;
+                var (success, errorMessage, messageData) = await _messageService.SendMessageAsync(
+                    userId, dto.ReceiverId, dto.Content ?? "", dto.Image);
 
-                if (dto.Image != null && dto.Image.Length > 0)
-                {
-                    var allowedTypes = new[] { "image/jpeg", "image/jpg", "image/png", "image/gif" };
-                    if (!allowedTypes.Contains(dto.Image.ContentType.ToLower()))
-                    {
-                        return Json(new { success = false, message = "Chỉ chấp nhận file ảnh" });
-                    }
+                if (!success)
+                    return Json(new { success = false, message = errorMessage });
 
-                    if (dto.Image.Length > 5 * 1024 * 1024)
-                    {
-                        return Json(new { success = false, message = "Ảnh không được vượt quá 5MB" });
-                    }
-
-                    var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "messages");
-                    if (!Directory.Exists(uploadsFolder))
-                    {
-                        Directory.CreateDirectory(uploadsFolder);
-                    }
-
-                    var fileName = $"{Guid.NewGuid()}{Path.GetExtension(dto.Image.FileName)}";
-                    var filePath = Path.Combine(uploadsFolder, fileName);
-
-                    using (var stream = new FileStream(filePath, FileMode.Create))
-                    {
-                        await dto.Image.CopyToAsync(stream);
-                    }
-
-                    imageUrl = $"/uploads/messages/{fileName}";
-                }
-
-                var content = dto.Content?.Trim() ?? "";
-                if (string.IsNullOrEmpty(content) && string.IsNullOrEmpty(imageUrl))
-                {
-                    return Json(new { success = false, message = "Nội dung không được để trống" });
-                }
-
-                if (string.IsNullOrEmpty(content) && !string.IsNullOrEmpty(imageUrl))
-                {
-                    content = "[Hình ảnh]";
-                }
-
-                var message = new MTU.Models.Entities.Message
-                {
-                    SenderId = userId,
-                    ReceiverId = dto.ReceiverId,
-                    Content = content,
-                    ImageUrl = imageUrl,
-                    CreatedAt = DateTime.Now,
-                    IsRead = false,
-                    IsDeleted = false
-                };
-
-                _context.Messages.Add(message);
-                await _context.SaveChangesAsync();
-
-                return Json(new { 
-                    success = true, 
-                    message = new {
-                        id = message.MessageId,
-                        content = message.Content,
-                        imageUrl = message.ImageUrl,
-                        time = message.CreatedAt.ToString("HH:mm")
-                    }
-                });
+                return Json(new { success = true, message = messageData });
             }
             catch (Exception ex)
             {
